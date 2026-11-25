@@ -92,7 +92,15 @@ if [ "$arch" != "$host_arch" ]; then
   if [ -f "/etc/debian_version" ]; then
     if ! dpkg --get-selections | grep -v deinstall | grep "qemu-user-static\|box64\|fex-emu" > /dev/null; then
       print_info "automatically installing qemu-user-static because we are building for a different architecture"
-      apt-get install qemu-user-static binfmt-support -y
+      #newer debian/ubuntu releases turned "qemu-user-static" into a virtual package with
+      #no installable candidate of its own; the real package providing it is now called
+      #"qemu-user-binfmt" (or "qemu-user-binfmt-hwe" on hwe-kernel ubuntu images). try the
+      #old name first for older releases, then fall back.
+      apt-get install qemu-user-static binfmt-support -y \
+        || apt-get install qemu-user-binfmt binfmt-support -y \
+        || apt-get install qemu-user-binfmt-hwe binfmt-support -y \
+        || apt-get install qemu-user-binfmt -y \
+        || apt-get install qemu-user-binfmt-hwe -y
     fi
   else 
     print_error "Warning: You are building an image for a different CPU architecture. It may fail if you do not have qemu-user-static installed."
