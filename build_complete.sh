@@ -14,7 +14,8 @@ print_help() {
   echo "  data_dir     - The working directory for the scripts. This defaults to ./data"
   echo "  arch         - The CPU architecture to build the shimboot image for. Set this to 'arm64' if you have an ARM Chromebook."
   echo "  release      - Set this to either 'bookworm', 'trixie', or 'unstable' to build for Debian 12, 13, or unstable."
-  echo "  distro       - The Linux distro to use. This should be either 'debian', 'ubuntu', or 'alpine'."
+  echo "  distro       - The Linux distro to use. This should be 'debian', 'ubuntu', 'alpine', or 'artix'."
+  echo "                 artix is systemd-free (openrc) and arm64 uses the community armtix port."
   echo "  luks         - Set this argument to encrypt the rootfs partition."
 }
 
@@ -66,7 +67,7 @@ elif [ "$kernel_arch" = "aarch64" ]; then
   host_arch="arm64"
 fi
 
-needed_deps="wget python3 unzip zip git debootstrap cpio binwalk pcregrep cgpt mkfs.ext4 mkfs.ext2 fdisk depmod findmnt lz4 pv cryptsetup"
+needed_deps="wget python3 unzip zip git debootstrap cpio binwalk pcregrep cgpt mkfs.ext4 mkfs.ext2 fdisk depmod findmnt lz4 pv cryptsetup zstd"
 if [ "$(check_deps "$needed_deps")" ]; then
   #install deps automatically on debian and ubuntu
   if [ -f "/etc/debian_version" ]; then
@@ -252,6 +253,8 @@ if [ ! "$rootfs_dir" ]; then
     release="${release:-noble}"
   elif [ "$distro" = "alpine" ]; then
     release="${release:-edge}"
+  elif [ "$distro" = "artix" ]; then
+    release="rolling" #artix has no separate releases to pick between
   else
     print_error "invalid distro selection"
     exit 1
