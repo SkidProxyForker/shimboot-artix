@@ -111,9 +111,14 @@ elif [ "$distro" = "artix" ]; then
   if [ "$arch" = "arm64" ]; then
     print_info "downloading armtix (aarch64 artix) image list"
     armtix_images_url="https://armtix.artixlinux.org/images/"
-    armtix_image_name="$(wget -qO- "$armtix_images_url" | pcregrep -o1 'href="(armtix-openrc-[0-9]+\.tar\.xz)"' | sort | tail -n1)"
+    #the listing is a plain-text-style index (filename/date/size columns), not an
+    #html autoindex with href="" links, so just match the filename at line-start
+    armtix_listing="$(wget -qO- --user-agent="Mozilla/5.0 (X11; Linux x86_64) shimboot-build" "$armtix_images_url")"
+    armtix_image_name="$(echo "$armtix_listing" | pcregrep -o1 '^(armtix-openrc-[0-9]+\.tar\.xz)' | sort -u | tail -n1)"
     if [ -z "$armtix_image_name" ]; then
       print_error "couldn't find an armtix-openrc image on $armtix_images_url"
+      print_error "raw listing returned by the server:"
+      echo "$armtix_listing"
       exit 1
     fi
     armtix_image_path="/tmp/$armtix_image_name"
