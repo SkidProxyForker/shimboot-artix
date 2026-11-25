@@ -140,8 +140,12 @@ elif [ "$distro" = "artix" ]; then
 
     print_info "pointing the bootstrap pacman at artix's repos"
     cp /etc/resolv.conf "$runner_root/etc/resolv.conf"
+    #gitea's own org/path layout for this has moved before, so fall back to the
+    #github mirror of the same package repo if the primary path 404s
     wget -qO "$runner_root/etc/pacman.d/mirrorlist-artix" \
-      "https://gitea.artixlinux.org/packagesA/artix-mirrorlist/raw/branch/master/trunk/mirrorlist"
+      "https://gitea.artixlinux.org/packages/artix-mirrorlist/raw/branch/master/mirrorlist" \
+      || wget -qO "$runner_root/etc/pacman.d/mirrorlist-artix" \
+      "https://raw.githubusercontent.com/artix-linux/packages/master/artix-mirrorlist/repos/core-any/mirrorlist"
     #artix packages first (so they take priority), then the stock arch repos as a
     #fallback for shared base packages. packages are left unsigned here to avoid
     #having to bootstrap a pacman keyring just for a one-shot automated build.
