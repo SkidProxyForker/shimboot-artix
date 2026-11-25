@@ -15,7 +15,7 @@ print_help() {
   echo "  user_passwd     - The password for the unprivileged user."
   echo "  disable_base    - Disable the base packages such as zram, cloud-utils, and command-not-found."
   echo "  arch            - The CPU architecture to build the rootfs for."
-  echo "  distro          - The Linux distro to use. This should be either 'debian' or 'alpine'."
+  echo "  distro          - The Linux distro to use. This should be 'debian', 'ubuntu', 'alpine', or 'artix'."
   echo "If you do not specify the hostname and credentials, you will be prompted for them later."
 }
 
@@ -97,6 +97,93 @@ elif [ "$distro" = "alpine" ]; then
     --root "$rootfs_dir" \
     --initdb add alpine-base
   chroot_script="/opt/setup_rootfs_alpine.sh"
+
+elif [ "$distro" = "artix" ]; then
+  #artix is a rolling-release, systemd-free, arch-based distro (openrc/runit/s6/dinit).
+  #on amd64 we bootstrap it with pacman, borrowed from arch's own relocatable bootstrap
+  #tarball, since there's no debootstrap/apk-tools-static equivalent we can fetch standalone.
+  #on arm64 there is no official artix arch64 port, so we use armtix
+  #(https://armtix.artixlinux.org), a community-maintained aarch64 port of artix which
+  #ships ready-made generic rootfs tarballs that already contain a working pacman + repo
+  #config, so no bootstrapping step is needed there.
+  assert_deps "zstd"
+
+  if [ "$arch" = "arm64" ]; then
+    print_info "downloading armtix (aarch64 artix) image list"
+    armtix_images_url="https://armtix.artixlinux.org/images/"
+    armtix_image_name="$(wget -qO- "$armtix_images_url" | pcregrep -o1 'href="(armtix-openrc-[0-9]+\.tar\.xz)"' | sort | tail -n1)"
+    if [ -z "$armtix_image_name" ]; then
+      print_error "couldn't find an armtix-openrc image on $armtix_images_url"
+      exit 1
+    fi
+    armtix_image_path="/tmp/$armtix_image_name"
+
+    print_info "downloading and extracting the armtix rootfs image (this is a ~1gb download)"
+    wget -q --show-progress "$armtix_images_url$armtix_image_name" -O "$armtix_image_path"
+    tar --xz --numeric-owner -xpf "$armtix_image_path" -C "$rootfs_dir"
+    rm -f "$armtix_image_path"
+
+    #armtix packages are currently unsigned, matching their own setup instructions
+    sed -i 's/^SigLevel.*/SigLevel = Never/' "$rootfs_dir/etc/pacman.conf"
+
+  else
+    print_info "downloading arch's bootstrap tarball to use as a pacman runner"
+    arch_bootstrap_url="https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst"
+    arch_bootstrap_tar="/tmp/archlinux-bootstrap-x86_64.tar.zst"
+    arch_bootstrap_dir="/tmp/archlinux-bootstrap"
+    rm -rf "$arch_bootstrap_dir"
+    mkdir -p "$arch_bootstrap_dir"
+    wget -q --show-progress "$arch_bootstrap_url" -O "$arch_bootstrap_tar"
+    tar --zstd --numeric-owner -xf "$arch_bootstrap_tar" -C "$arch_bootstrap_dir"
+    rm -f "$arch_bootstrap_tar"
+    runner_root="$arch_bootstrap_dir/root.x86_64"
+
+    print_info "pointing the bootstrap pacman at artix's repos"
+    cp /etc/resolv.conf "$runner_root/etc/resolv.conf"
+    wget -qO "$runner_root/etc/pacman.d/mirrorlist-artix" \
+      "https://gitea.artixlinux.org/packagesA/artix-mirrorlist/raw/branch/master/trunk/mirrorlist"
+    #artix packages first (so they take priority), then the stock arch repos as a
+    #fallback for shared base packages. packages are left unsigned here to avoid
+    #having to bootstrap a pacman keyring just for a one-shot automated build.
+    cat >> "$runner_root/etc/pacman.conf" << END
+
+[system]
+SigLevel = Never
+Include = /etc/pacman.d/mirrorlist-artix
+
+[world]
+SigLevel = Never
+Include = /etc/pacman.d/mirrorlist-artix
+
+[galaxy]
+SigLevel = Never
+Include = /etc/pacman.d/mirrorlist-artix
+END
+
+    print_info "bootstraping artix chroot with pacman"
+    mkdir -p "$runner_root/target"
+    chroot_mounts_runner="proc sys dev run"
+    for mountpoint in $chroot_mounts_runner; do
+      mount --make-rslave --rbind "/$mountpoint" "$runner_root/$mountpoint"
+    done
+    mount --make-rslave --rbind "$rootfs_dir" "$runner_root/target"
+
+    unmount_runner() {
+      for mountpoint in $chroot_mounts_runner; do
+        umount -l "$runner_root/$mountpoint" 2>/dev/null
+      done
+      umount -l "$runner_root/target" 2>/dev/null
+    }
+    trap unmount_runner EXIT
+
+    chroot "$runner_root" pacman -Sy --root /target --dbpath /target/var/lib/pacman \
+      --noconfirm --overwrite '*' base openrc-system openrc-world elogind-openrc
+
+    unmount_runner
+    trap - EXIT
+    rm -rf "$arch_bootstrap_dir"
+  fi
+  chroot_script="/opt/setup_rootfs_artix.sh"
 
 else
   print_error "'$distro' is an invalid distro choice."
