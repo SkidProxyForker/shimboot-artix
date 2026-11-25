@@ -72,7 +72,17 @@ if [ "$(check_deps "$needed_deps")" ]; then
   #install deps automatically on debian and ubuntu
   if [ -f "/etc/debian_version" ]; then
     print_title "attempting to install build deps"
-    apt-get install wget python3 unzip zip debootstrap cpio binwalk pcregrep cgpt kmod pv lz4 cryptsetup -y
+    apt-get install wget python3 unzip zip debootstrap cpio binwalk cgpt kmod pv lz4 cryptsetup zstd -y
+    #newer debian/ubuntu releases dropped the legacy pcre1 "pcregrep" package in favor
+    #of pcre2-utils, whose binary is named "pcre2grep" instead. try the old name first
+    #for older releases, then fall back and alias it so the rest of the codebase (which
+    #calls "pcregrep" directly) doesn't need to change.
+    if ! command -v pcregrep &> /dev/null; then
+      apt-get install pcregrep -y || apt-get install pcre2-utils -y
+      if ! command -v pcregrep &> /dev/null && command -v pcre2grep &> /dev/null; then
+        ln -s "$(command -v pcre2grep)" /usr/local/bin/pcregrep
+      fi
+    fi
   fi
   assert_deps "$needed_deps"
 fi
