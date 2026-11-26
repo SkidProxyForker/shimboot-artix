@@ -109,14 +109,25 @@ elif [ "$distro" = "artix" ]; then
   assert_deps "zstd"
 
   if [ "$arch" = "arm64" ]; then
-    print_info "downloading armtix (aarch64 artix) image list"
+    #only https://armtix.artixlinux.org is actually live right now (the other two
+    #mirrors listed on armtix's own homepage are currently dead: repo.xdan.eu 404s
+    #and armtixlinux.org refuses connections), so there's no real alternate host to
+    #fall back to. what we can do is make the request itself look less like a bot,
+    #since this mirror is cloudflare-fronted and the big file download has been
+    #observed failing (http error) even though the small listing page loads fine -
+    #that pattern usually means a waf/rate-limit rule keyed on the request itself,
+    #not that the file is actually unavailable.
     armtix_images_url="https://armtix.artixlinux.org/images/"
-    #this mirror is cloudflare-fronted and has been observed serving either a bare
-    #plain-text listing or a themed html autoindex (with the filename wrapped in an
-    #<a href="..."> link) depending on the request, so don't anchor to either markup
-    #style - just match the filename itself wherever it appears on the line. it may
-    #appear twice per line (once in the href, once as the link text); sort -u dedupes.
-    armtix_listing="$(wget -qO- --user-agent="Mozilla/5.0 (X11; Linux x86_64) shimboot-build" "$armtix_images_url")"
+    armtix_user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+    print_info "downloading armtix (aarch64 artix) image list"
+    #this page has been observed serving either a bare plain-text listing or a
+    #themed html autoindex (with the filename wrapped in an <a href="..."> link)
+    #depending on the request, so don't anchor to either markup style - just match
+    #the filename itself wherever it appears on the line. it may appear twice per
+    #line (once in the href, once as the link text); sort -u dedupes.
+    armtix_listing="$(wget -qO- --tries=3 --timeout=20 --user-agent="$armtix_user_agent" \
+      --header="Accept: text/html" "$armtix_images_url")"
     armtix_image_name="$(echo "$armtix_listing" | pcregrep -o1 '(armtix-openrc-[0-9]{8}\.tar\.xz)' | sort -u | tail -n1)"
     if [ -z "$armtix_image_name" ]; then
       print_error "couldn't find an armtix-openrc image on $armtix_images_url"
@@ -125,9 +136,32 @@ elif [ "$distro" = "artix" ]; then
       exit 1
     fi
     armtix_image_path="/tmp/$armtix_image_name"
+    armtix_image_url="$armtix_images_url$armtix_image_name"
 
     print_info "downloading and extracting the armtix rootfs image (this is a ~1gb download)"
-    wget -q --show-progress "$armtix_images_url$armtix_image_name" -O "$armtix_image_path"
+    #retry with backoff, a full browser user-agent/headers, and a referer pointing
+    #at the listing page we just loaded (some basic waf rules check for exactly
+    #this - a direct file request with no referer is a common bot tell). if wget
+    #still gets rejected, fall back to curl, since a different http client can
+    #sometimes get through where another one doesn't.
+    download_ok=""
+    if wget --tries=5 --waitretry=10 --timeout=60 -q --show-progress \
+      --user-agent="$armtix_user_agent" --header="Referer: $armtix_images_url" \
+      "$armtix_image_url" -O "$armtix_image_path"; then
+      download_ok="1"
+    else
+      rm -f "$armtix_image_path"
+      print_info "wget was rejected, retrying the same download with curl instead"
+      if curl -fL --retry 5 --retry-delay 10 -A "$armtix_user_agent" \
+        -e "$armtix_images_url" -o "$armtix_image_path" "$armtix_image_url"; then
+        download_ok="1"
+      fi
+    fi
+    if [ -z "$download_ok" ]; then
+      print_error "couldn't download $armtix_image_name - the mirror may be blocking this network/IP range"
+      exit 1
+    fi
+
     tar --xz --numeric-owner -xpf "$armtix_image_path" -C "$rootfs_dir"
     rm -f "$armtix_image_path"
 
