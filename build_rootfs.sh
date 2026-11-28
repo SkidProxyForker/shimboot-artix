@@ -161,6 +161,13 @@ elif [ "$distro" = "artix" ]; then
       print_error "couldn't download $armtix_image_name - the mirror may be blocking this network/IP range"
       exit 1
     fi
+    #a "successful" download could still be a cloudflare challenge page or a
+    #truncated file rather than the real archive, so verify it's valid xz before
+    #extracting, instead of silently extracting garbage and failing confusingly later
+    if ! xz -t "$armtix_image_path" 2>/dev/null; then
+      print_error "the downloaded armtix image isn't a valid xz archive (got blocked/corrupted content)"
+      exit 1
+    fi
 
     tar --xz --numeric-owner -xpf "$armtix_image_path" -C "$rootfs_dir"
     rm -f "$armtix_image_path"
@@ -182,12 +189,28 @@ elif [ "$distro" = "artix" ]; then
 
     print_info "pointing the bootstrap pacman at artix's repos"
     cp /etc/resolv.conf "$runner_root/etc/resolv.conf"
-    #gitea's own org/path layout for this has moved before, so fall back to the
-    #github mirror of the same package repo if the primary path 404s
-    wget -qO "$runner_root/etc/pacman.d/mirrorlist-artix" \
-      "https://gitea.artixlinux.org/packages/artix-mirrorlist/raw/branch/master/mirrorlist" \
-      || wget -qO "$runner_root/etc/pacman.d/mirrorlist-artix" \
-      "https://raw.githubusercontent.com/artix-linux/packages/master/artix-mirrorlist/repos/core-any/mirrorlist"
+    #gitea.artixlinux.org appears to sit behind the same cloudflare setup as
+    #armtix.artixlinux.org, which can return a challenge/interstitial page with a
+    #200 status for plain wget requests instead of real content or a real 404. a
+    #200 status alone doesn't mean we got a usable mirrorlist, so don't just trust
+    #wget's exit code here - actually check the file has real "Server = " lines in
+    #it before accepting it, and only then stop trying the remaining urls.
+    mirrorlist_dest="$runner_root/etc/pacman.d/mirrorlist-artix"
+    mirrorlist_urls="https://gitea.artixlinux.org/packages/artix-mirrorlist/raw/branch/master/mirrorlist https://raw.githubusercontent.com/artix-linux/packages/master/artix-mirrorlist/repos/core-any/mirrorlist"
+    mirrorlist_ok=""
+    for url in $mirrorlist_urls; do
+      wget -qO "$mirrorlist_dest" \
+        --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+        "$url" 2>/dev/null
+      if grep -q "^Server" "$mirrorlist_dest" 2>/dev/null; then
+        mirrorlist_ok="1"
+        break
+      fi
+    done
+    if [ -z "$mirrorlist_ok" ]; then
+      print_error "couldn't fetch a usable artix mirrorlist from any source (got blocked/empty/invalid content from each)"
+      exit 1
+    fi
     #artix packages first (so they take priority), then the stock arch repos as a
     #fallback for shared base packages. packages are left unsigned here to avoid
     #having to bootstrap a pacman keyring just for a one-shot automated build.
